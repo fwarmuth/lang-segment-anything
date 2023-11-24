@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from groundingdino.models import build_model
 from groundingdino.util import box_ops
-from groundingdino.util.inference import predict
+from groundingdino.util.inference import predict as dino_predict, detect as dino_detect
 from groundingdino.util.slconfig import SLConfig
 from groundingdino.util.utils import clean_state_dict
 from huggingface_hub import hf_hub_download
@@ -89,7 +89,7 @@ class LangSAM():
 
     def predict_dino(self, image_pil, text_prompt, box_threshold, text_threshold):
         image_trans = transform_image(image_pil)
-        boxes, logits, phrases = predict(model=self.groundingdino,
+        prompt, boxes, logits, phrases = dino_predict(model=self.groundingdino,
                                          image=image_trans,
                                          caption=text_prompt,
                                          box_threshold=box_threshold,
@@ -98,7 +98,36 @@ class LangSAM():
         W, H = image_pil.size
         boxes = box_ops.box_cxcywh_to_xyxy(boxes) * torch.Tensor([W, H, W, H])
 
-        return boxes, logits, phrases
+        return prompt, boxes, logits, phrases
+
+    def predict_dino_batch_prompt(self, image_pils, text_prompts, box_threshold, text_threshold):
+        # If image_pils is just a single image, make it a list of length len(text_prompts)
+        if not isinstance(image_pils, list):
+            image_pils= [image_pils for i in range(len(text_prompts))]
+
+        assert len(image_pils) == len(text_prompts), "Number of images and text prompts must match"
+
+        images = [transform_image(image_pil) for image_pil in image_pils]
+
+        prompts, boxes, logits, phrases = dino_detect(model=self.groundingdino,
+                                            images=images,
+                                            captions=text_prompts,
+                                            box_threshold=box_threshold,
+                                            text_threshold=text_threshold,
+                                            device=self.device)
+        for i in range(len(boxes)):
+            W, H = image_pils[i].size
+            boxes[i] = box_ops.box_cxcywh_to_xyxy(boxes[i]) * torch.Tensor([W, H, W, H])
+        # Flatten
+        flat_prompts, flat_boxes, flat_logits, flat_phrases = [], [], [], []
+        for i in range(len(prompts)):
+            for k in range(len(prompts[i])):
+                flat_prompts.append(prompts[i][k])
+                flat_boxes.append(boxes[i][k])
+                flat_logits.append(logits[i][k])
+                flat_phrases.append(phrases[i][k])
+        return flat_prompts, flat_boxes, flat_logits, flat_phrases
+
 
     def predict_sam(self, image_pil, boxes):
         image_array = np.asarray(image_pil)
@@ -113,9 +142,17 @@ class LangSAM():
         return masks.cpu()
 
     def predict(self, image_pil, text_prompt, box_threshold=0.3, text_threshold=0.25):
-        boxes, logits, phrases = self.predict_dino(image_pil, text_prompt, box_threshold, text_threshold)
+        if isinstance(text_prompt, list):
+            prompts, boxes, logits, phrases = self.predict_dino_batch_prompt(image_pil, text_prompt, box_threshold, text_threshold)
+            # Flatten the boxes, logits, and phrases
+            boxes = torch.stack([box for box in boxes])
+            # logits = [logit for logits_list in logits for logit in logits_list]
+            # phrases = [phrase for phrases_list in phrases for phrase in phrases_list] 
+        else:
+            prompts, boxes, logits, phrases = self.predict_dino(image_pil, text_prompt, box_threshold, text_threshold)
         masks = torch.tensor([])
         if len(boxes) > 0:
             masks = self.predict_sam(image_pil, boxes)
             masks = masks.squeeze(1)
-        return masks, boxes, phrases, logits
+        return prompts, masks, boxes, phrases, logits
+    
