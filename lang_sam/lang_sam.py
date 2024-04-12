@@ -144,8 +144,9 @@ class LangSAM():
     def predict(self, image_pil, text_prompt, box_threshold=0.3, text_threshold=0.25):
         if isinstance(text_prompt, list):
             prompts, boxes, logits, phrases = self.predict_dino_batch_prompt(image_pil, text_prompt, box_threshold, text_threshold)
-            # Flatten the boxes, logits, and phrases
-            boxes = torch.stack([box for box in boxes])
+            if boxes:
+                # Flatten the boxes, logits, and phrases
+                boxes = torch.stack([box for box in boxes])
             # logits = [logit for logits_list in logits for logit in logits_list]
             # phrases = [phrase for phrases_list in phrases for phrase in phrases_list] 
         else:
